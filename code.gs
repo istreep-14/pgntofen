@@ -42,12 +42,18 @@ function buildGroupedOpenings() {
     const subvars = op.subvariations.length ? op.subvariations : ['—'];
 
     if (!grouped[family]) grouped[family] = {};
-    if (!grouped[family][variation]) grouped[family][variation] = {};
+    if (!grouped[family][variation]) grouped[family][variation] = { _order: [] };
 
-    // Place the opening under each subvariation it lists
+    const subvarContainer = grouped[family][variation];
+    if (!Array.isArray(subvarContainer._order)) subvarContainer._order = [];
+
+    // Place the opening under each subvariation it lists (preserving listed order)
     for (const sv of subvars) {
-      if (!grouped[family][variation][sv]) grouped[family][variation][sv] = [];
-      grouped[family][variation][sv].push({
+      if (!subvarContainer[sv]) {
+        subvarContainer[sv] = [];
+        if (!subvarContainer._order.includes(sv)) subvarContainer._order.push(sv);
+      }
+      subvarContainer[sv].push({
         eco: op.eco,
         name: op.name,
         pgn: op.pgn
@@ -103,16 +109,23 @@ function renderGroupedOpeningsToSheet(grouped) {
 
       const subvarBlockStart = row;
 
-      for (const subvar of sortKeys(grouped[family][variation])) {
-        const subvarHeaderRow = row++;
-        sheet.getRange(subvarHeaderRow, 1, 1, lastCol).setValues([['Subvariation', family, variation, subvar, '', '', '']]);
+      {
+        const subvarContainer = grouped[family][variation];
+        const subvarOrder = (subvarContainer && Array.isArray(subvarContainer._order) && subvarContainer._order.length)
+          ? subvarContainer._order
+          : sortKeys(subvarContainer).filter(k => k !== '_order');
 
-        const entries = grouped[family][variation][subvar];
-        if (entries.length) {
-          const dataRows = entries.map(e => ['Entry', family, variation, subvar, e.eco, e.name, e.pgn]);
-          sheet.getRange(row, 1, dataRows.length, lastCol).setValues(dataRows);
-          sheet.getRange(subvarHeaderRow + 1, 1, dataRows.length, lastCol).shiftRowGroupDepth(1);
-          row += dataRows.length;
+        for (const subvar of subvarOrder) {
+          const subvarHeaderRow = row++;
+          sheet.getRange(subvarHeaderRow, 1, 1, lastCol).setValues([['Subvariation', family, variation, subvar, '', '', '']]);
+
+          const entries = subvarContainer[subvar] || [];
+          if (entries.length) {
+            const dataRows = entries.map(e => ['Entry', family, variation, subvar, e.eco, e.name, e.pgn]);
+            sheet.getRange(row, 1, dataRows.length, lastCol).setValues(dataRows);
+            sheet.getRange(subvarHeaderRow + 1, 1, dataRows.length, lastCol).shiftRowGroupDepth(1);
+            row += dataRows.length;
+          }
         }
       }
 
