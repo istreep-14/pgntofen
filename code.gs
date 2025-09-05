@@ -34,30 +34,26 @@ function buildGroupedOpenings() {
     }
   });
 
-  // Build nested: family -> variation -> subvariation -> [entries]
+  // Build nested: family -> variation -> subvariation1 -> subvariation2 -> ... -> entries
   const grouped = {};
   for (const op of openings) {
     const family = op.family || '—';
     const variation = op.variation || '—';
-    const subvars = op.subvariations.length ? op.subvariations : ['—'];
+    const subvars = op.subvariations || [];
 
     if (!grouped[family]) grouped[family] = {};
-    if (!grouped[family][variation]) grouped[family][variation] = { _order: [] };
+    if (!grouped[family][variation]) grouped[family][variation] = { children: {}, entries: [] };
 
-    const subvarContainer = grouped[family][variation];
-    if (!Array.isArray(subvarContainer._order)) subvarContainer._order = [];
-
-    // Place the opening under each subvariation it lists (preserving listed order)
-    for (const sv of subvars) {
-      if (!subvarContainer[sv]) {
-        subvarContainer[sv] = [];
-        if (!subvarContainer._order.includes(sv)) subvarContainer._order.push(sv);
+    let node = grouped[family][variation];
+    if (subvars.length === 0) {
+      node.entries.push({ eco: op.eco, name: op.name, pgn: op.pgn });
+    } else {
+      for (let i = 0; i < subvars.length; i++) {
+        const label = (subvars[i] || '—');
+        if (!node.children[label]) node.children[label] = { children: {}, entries: [] };
+        node = node.children[label];
       }
-      subvarContainer[sv].push({
-        eco: op.eco,
-        name: op.name,
-        pgn: op.pgn
-      });
+      node.entries.push({ eco: op.eco, name: op.name, pgn: op.pgn });
     }
   }
   return grouped;
@@ -86,51 +82,79 @@ function renderGroupedOpeningsToSheet(grouped) {
   const sheet = ss.getSheetByName(title) || ss.insertSheet(title);
   sheet.clear();
 
-  const header = ['Level', 'Family', 'Variation', 'Subvariation', 'ECO', 'Name', 'PGN'];
+  const header = ['Level', 'Family', 'Variation', 'Subvariation 1', 'Subvariation 2', 'Subvariation 3', 'ECO', 'Name', 'PGN'];
   sheet.getRange(1, 1, 1, header.length).setValues([header]);
   sheet.setFrozenRows(1);
 
   let row = 2;
   const lastCol = header.length;
 
-  const sortKeys = obj => Object.keys(obj).sort((a, b) =>
+  const sortKeys = obj => (obj ? Object.keys(obj) : []).sort((a, b) =>
     a.localeCompare(b, undefined, { sensitivity: 'base' })
   );
 
   for (const family of sortKeys(grouped)) {
     const familyHeaderRow = row++;
-    sheet.getRange(familyHeaderRow, 1, 1, lastCol).setValues([['Family', family, '', '', '', '', '']]);
+    sheet.getRange(familyHeaderRow, 1, 1, lastCol).setValues([['Family', family, '', '', '', '', '', '', '']]);
 
     const variationBlockStart = row;
 
     for (const variation of sortKeys(grouped[family])) {
+      const node = grouped[family][variation];
+      if (!node) continue;
+
       const variationHeaderRow = row++;
-      sheet.getRange(variationHeaderRow, 1, 1, lastCol).setValues([['Variation', family, variation, '', '', '', '']]);
+      sheet.getRange(variationHeaderRow, 1, 1, lastCol).setValues([['Variation', family, variation, '', '', '', '', '', '']]);
 
-      const subvarBlockStart = row;
+      const blockStart = row;
 
-      {
-        const subvarContainer = grouped[family][variation];
-        const subvarOrder = (subvarContainer && Array.isArray(subvarContainer._order) && subvarContainer._order.length)
-          ? subvarContainer._order
-          : sortKeys(subvarContainer).filter(k => k !== '_order');
-
-        for (const subvar of subvarOrder) {
-          const subvarHeaderRow = row++;
-          sheet.getRange(subvarHeaderRow, 1, 1, lastCol).setValues([['Subvariation', family, variation, subvar, '', '', '']]);
-
-          const entries = subvarContainer[subvar] || [];
-          if (entries.length) {
-            const dataRows = entries.map(e => ['Entry', family, variation, subvar, e.eco, e.name, e.pgn]);
-            sheet.getRange(row, 1, dataRows.length, lastCol).setValues(dataRows);
-            sheet.getRange(subvarHeaderRow + 1, 1, dataRows.length, lastCol).shiftRowGroupDepth(1);
-            row += dataRows.length;
-          }
-        }
+      // Write entries directly under the variation (no subvariations)
+      if (Array.isArray(node.entries) && node.entries.length) {
+        const dataRows = node.entries.map(e => ['Entry', family, variation, '', '', '', e.eco, e.name, e.pgn]);
+        sheet.getRange(row, 1, dataRows.length, lastCol).setValues(dataRows);
+        sheet.getRange(row, 1, dataRows.length, lastCol).shiftRowGroupDepth(1);
+        row += dataRows.length;
       }
 
-      if (row > subvarBlockStart) {
-        sheet.getRange(subvarBlockStart, 1, row - subvarBlockStart, lastCol).shiftRowGroupDepth(1);
+      // Recursive writer for subvariation children
+      const writeChild = (subvarPath, label, childNode) => {
+        const subvarHeaderRow = row++;
+        const cols = ['', family, variation, '', '', '', '', '', ''];
+        const newPath = subvarPath.concat(label);
+        // Place labels into Subvariation columns up to 3
+        for (let i = 0; i < Math.min(3, newPath.length); i++) cols[3 + i] = newPath[i];
+        sheet.getRange(subvarHeaderRow, 1, 1, lastCol).setValues([['Subvariation'].concat(cols.slice(1))]);
+
+        const start = row;
+
+        if (Array.isArray(childNode.entries) && childNode.entries.length) {
+          const dataRows = childNode.entries.map(e => {
+            const svCols = ['', family, variation, '', '', '', e.eco, e.name, e.pgn];
+            for (let i = 0; i < Math.min(3, newPath.length); i++) svCols[3 + i] = newPath[i];
+            return ['Entry'].concat(svCols.slice(1));
+          });
+          sheet.getRange(row, 1, dataRows.length, lastCol).setValues(dataRows);
+          sheet.getRange(row, 1, dataRows.length, lastCol).shiftRowGroupDepth(1);
+          row += dataRows.length;
+        }
+
+        const childLabels = sortKeys(childNode.children);
+        for (const childLabel of childLabels) {
+          writeChild(newPath, childLabel, childNode.children[childLabel]);
+        }
+
+        if (row > start) {
+          sheet.getRange(start, 1, row - start, lastCol).shiftRowGroupDepth(1);
+        }
+      };
+
+      const childLabels = sortKeys(node.children);
+      for (const label of childLabels) {
+        writeChild([], label, node.children[label]);
+      }
+
+      if (row > blockStart) {
+        sheet.getRange(blockStart, 1, row - blockStart, lastCol).shiftRowGroupDepth(1);
       }
     }
 
@@ -155,7 +179,7 @@ const CONFIG = {
   files: ['a.tsv', 'b.tsv', 'c.tsv', 'd.tsv', 'e.tsv'],
   targetSheetName: 'Openings Normalized',
   batchInputLines: 400, // adjust if needed
-  headerRow: ['Family', 'Variation', 'Subvariation', 'ECO', 'Name', 'PGN', 'SourceFile', 'DataLine', 'Key'],
+  headerRow: ['Family', 'Variation', 'Subvariation 1', 'Subvariation 2', 'Subvariation 3', 'ECO', 'Name', 'PGN', 'SourceFile', 'DataLine', 'Key'],
   propFileIdx: 'CO_FILE_IDX',
   propDataIdx: 'CO_DATA_IDX'
 };
@@ -192,15 +216,15 @@ function resumeImport() {
       if (!eco || !name || !pgn) continue;
 
       const { family, variation, subvariations } = parseName_(name);
-      const subvars = (subvariations && subvariations.length) ? subvariations : ['—'];
+      const sv1 = subvariations[0] || '';
+      const sv2 = subvariations[1] || '';
+      const sv3 = subvariations[2] || '';
 
-      for (const sv of subvars) {
-        const row = [family || '—', variation || '—', sv, eco, name, pgn, fileName, i, ''];
-        row[8] = makeKey_(row);
-        if (!existingKeySet.has(row[8])) {
-          rowsToAppend.push(row);
-          existingKeySet.add(row[8]);
-        }
+      const row = [family || '—', variation || '—', sv1, sv2, sv3, eco, name, pgn, fileName, i, ''];
+      row[10] = makeKey_(row);
+      if (!existingKeySet.has(row[10])) {
+        rowsToAppend.push(row);
+        existingKeySet.add(row[10]);
       }
     }
 
@@ -313,12 +337,14 @@ function parseName_(name) {
 }
 
 function makeKey_(row) {
-  // row = [Family, Variation, Subvariation, ECO, Name, PGN, SourceFile, DataLine, Key]
+  // row = [Family, Variation, SV1, SV2, SV3, ECO, Name, PGN, SourceFile, DataLine, Key]
   const family = row[0] || '';
   const variation = row[1] || '';
-  const subvar = row[2] || '';
-  const eco = row[3] || '';
-  const name = row[4] || '';
-  const pgn = row[5] || '';
-  return [eco, name, pgn, family, variation, subvar].join('|');
+  const sv1 = row[2] || '';
+  const sv2 = row[3] || '';
+  const sv3 = row[4] || '';
+  const eco = row[5] || '';
+  const name = row[6] || '';
+  const pgn = row[7] || '';
+  return [eco, name, pgn, family, variation, sv1, sv2, sv3].join('|');
 }
